@@ -9,6 +9,22 @@ from shapely.geometry.base import BaseGeometry
 from . import _compat as compat
 from .array import GeometryArray, GeometryDtype, points_from_xy
 
+def _delegate_property(property_name):
+    """Create a property that delegates to the underlying geometry array.
+    
+    Parameters
+    ----------
+    property_name : str
+        The name of the property to delegate to the geometry array.
+    
+    Returns
+    -------
+    property
+    """
+    def _property_getter(self):
+        return getattr(self.geometry.values, property_name)
+    return property(_property_getter)
+
 def is_geometry_type(data):
     """
     Check if the data is of geometry dtype.
