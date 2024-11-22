@@ -5,6 +5,25 @@ Based on https://github.com/topper-123/optioneer, but simplified (don't deal
 with nested options, deprecated options, ..), just the attribute-style dict
 like holding the options and giving a nice repr.
 """
+
+def _validate_display_precision(value):
+    if value is not None:
+        if not isinstance(value, int):
+            raise ValueError("display_precision must be an integer or None")
+        if value < 0:
+            raise ValueError("display_precision must be non-negative")
+
+def _validate_io_engine(value):
+    if value is not None and value not in ('pyogrio', 'fiona'):
+        raise ValueError("io_engine must be one of 'pyogrio', 'fiona', or None")
+
+def _warn_use_pygeos_deprecated(value):
+    if value:
+        warnings.warn(
+            "The use_pygeos option is deprecated and will be removed in GeoPandas 1.1.",
+            FutureWarning,
+            stacklevel=2
+        )
 import textwrap
 import warnings
 from collections import namedtuple
