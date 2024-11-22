@@ -24,7 +24,30 @@ def _sanitize_geoms(geoms, prefix='Multi'):
     component_index : index array
         indices are repeated for all components in the same Multi geometry
     """
-    pass
+    components = []
+    component_index = []
+
+    if isinstance(geoms, (pd.Series, pd.DataFrame)):
+        geoms_index = np.arange(len(geoms))
+    else:
+        geoms_index = np.arange(len(list(geoms)))
+
+    for geom, idx in zip(geoms, geoms_index):
+        if geom is None or geom.is_empty:
+            continue
+        if prefix == 'Multi' and geom.type.startswith('Multi'):
+            for component in geom.geoms:
+                components.append(component)
+                component_index.append(idx)
+        elif prefix == 'Geom' and geom.type == 'GeometryCollection':
+            for component in geom.geoms:
+                components.append(component)
+                component_index.append(idx)
+        else:
+            components.append(geom)
+            component_index.append(idx)
+
+    return components, np.array(component_index)
 
 def _expand_kwargs(kwargs, multiindex):
     """
@@ -33,7 +56,19 @@ def _expand_kwargs(kwargs, multiindex):
     it (in place) to the correct length/formats with help of 'multiindex', unless
     the value appears to already be a valid (single) value for the key.
     """
-    pass
+    for key, value in kwargs.items():
+        if isinstance(value, (np.ndarray, pd.Series)):
+            if value.shape[0] != len(multiindex):
+                raise ValueError(
+                    f"Length of {key} sequence must match length of geometries"
+                )
+            kwargs[key] = value.take(multiindex)
+        elif isinstance(value, list):
+            if len(value) != len(multiindex):
+                raise ValueError(
+                    f"Length of {key} sequence must match length of geometries"
+                )
+            kwargs[key] = np.array(value).take(multiindex)
 
 def _PolygonPatch(polygon, **kwargs):
     """Constructs a matplotlib patch from a Polygon geometry
@@ -51,7 +86,35 @@ def _PolygonPatch(polygon, **kwargs):
     (BSD license, https://pypi.org/project/descartes) for PolygonPatch, but
     this dependency was removed in favor of the below matplotlib code.
     """
-    pass
+    try:
+        from matplotlib.patches import PathPatch
+        from matplotlib.path import Path
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting")
+
+    def ring_coding(ob):
+        # The codes will be all "LINETO" commands, except for "MOVETO"s at the
+        # beginning of each subpath
+        n = len(ob.coords)
+        codes = np.ones(n, dtype=Path.code_type) * Path.LINETO
+        codes[0] = Path.MOVETO
+        return codes
+
+    def pathify(polygon):
+        # Convert coordinates to path vertices. Objects produced by asShape() have
+        # coordinates in the form [(x, y), (x, y), ...]
+        vertices = np.concatenate(
+            [np.asarray(polygon.exterior.coords)[:, :2]]
+            + [np.asarray(r.coords)[:, :2] for r in polygon.interiors]
+        )
+        codes = np.concatenate(
+            [ring_coding(polygon.exterior)]
+            + [ring_coding(r) for r in polygon.interiors]
+        )
+        return Path(vertices, codes)
+
+    path = pathify(polygon)
+    return PathPatch(path, **kwargs)
 
 def _plot_polygon_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, autolim=True, **kwargs):
     """
@@ -82,7 +145,44 @@ def _plot_polygon_collection(ax, geoms, values=None, color=None, cmap=None, vmin
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    try:
+        from matplotlib.collections import PatchCollection
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting")
+
+    geoms, multiindex = _sanitize_geoms(geoms)
+    if not geoms:
+        return None
+
+    # Process values and colors
+    if values is not None:
+        if color is not None:
+            warnings.warn("'color' keyword is ignored when using 'values'")
+        if cmap is None:
+            cmap = "viridis"
+        if isinstance(values, pd.Series):
+            values = values.values
+        values = np.take(values, multiindex)
+        kwargs["array"] = values
+        kwargs["cmap"] = cmap
+        if vmin is not None:
+            kwargs["vmin"] = vmin
+        if vmax is not None:
+            kwargs["vmax"] = vmax
+    elif color is not None:
+        if isinstance(color, (pd.Series, np.ndarray, list)):
+            kwargs["facecolor"] = np.take(color, multiindex)
+        else:
+            kwargs["facecolor"] = color
+        if "edgecolor" not in kwargs:
+            kwargs["edgecolor"] = "black"
+
+    # Create patches and collections
+    patches = [_PolygonPatch(poly) for poly in geoms]
+    collection = PatchCollection(patches, **kwargs)
+    ax.add_collection(collection, autolim=autolim)
+
+    return collection
 
 def _plot_linestring_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, autolim=True, **kwargs):
     """
@@ -106,7 +206,48 @@ def _plot_linestring_collection(ax, geoms, values=None, color=None, cmap=None, v
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    try:
+        from matplotlib.collections import LineCollection
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting")
+
+    geoms, multiindex = _sanitize_geoms(geoms)
+    if not geoms:
+        return None
+
+    # Extract line segments
+    segments = []
+    for line in geoms:
+        if line.type == 'LineString':
+            segments.append(np.array(line.coords))
+        elif line.type == 'MultiLineString':
+            segments.extend(np.array(ls.coords) for ls in line.geoms)
+
+    # Process values and colors
+    if values is not None:
+        if color is not None:
+            warnings.warn("'color' keyword is ignored when using 'values'")
+        if cmap is None:
+            cmap = "viridis"
+        if isinstance(values, pd.Series):
+            values = values.values
+        values = np.take(values, multiindex)
+        kwargs["array"] = values
+        kwargs["cmap"] = cmap
+        if vmin is not None:
+            kwargs["vmin"] = vmin
+        if vmax is not None:
+            kwargs["vmax"] = vmax
+    elif color is not None:
+        if isinstance(color, (pd.Series, np.ndarray, list)):
+            kwargs["color"] = np.take(color, multiindex)
+        else:
+            kwargs["color"] = color
+
+    collection = LineCollection(segments, **kwargs)
+    ax.add_collection(collection, autolim=autolim)
+
+    return collection
 
 def _plot_point_collection(ax, geoms, values=None, color=None, cmap=None, vmin=None, vmax=None, marker='o', markersize=None, **kwargs):
     """
@@ -130,7 +271,53 @@ def _plot_point_collection(ax, geoms, values=None, color=None, cmap=None, vmin=N
     -------
     collection : matplotlib.collections.Collection that was plotted
     """
-    pass
+    geoms, multiindex = _sanitize_geoms(geoms)
+    if not geoms:
+        return None
+
+    # Convert points to coordinates array
+    x = []
+    y = []
+    for point in geoms:
+        if point.type == 'Point':
+            x.append(point.x)
+            y.append(point.y)
+        elif point.type == 'MultiPoint':
+            for p in point.geoms:
+                x.append(p.x)
+                y.append(p.y)
+
+    # Process values and colors
+    if values is not None:
+        if color is not None:
+            warnings.warn("'color' keyword is ignored when using 'values'")
+        if cmap is None:
+            cmap = "viridis"
+        if isinstance(values, pd.Series):
+            values = values.values
+        values = np.take(values, multiindex)
+        kwargs["c"] = values
+        kwargs["cmap"] = cmap
+        if vmin is not None:
+            kwargs["vmin"] = vmin
+        if vmax is not None:
+            kwargs["vmax"] = vmax
+    elif color is not None:
+        if isinstance(color, (pd.Series, np.ndarray, list)):
+            kwargs["c"] = np.take(color, multiindex)
+        else:
+            kwargs["c"] = color
+
+    # Process marker size
+    if markersize is not None:
+        if isinstance(markersize, (pd.Series, np.ndarray, list)):
+            markersize = np.take(markersize, multiindex)
+        kwargs["s"] = markersize
+
+    kwargs["marker"] = marker
+    collection = ax.scatter(x, y, **kwargs)
+
+    return collection
 
 def plot_series(s, cmap=None, color=None, ax=None, figsize=None, aspect='auto', autolim=True, **style_kwds):
     """
@@ -178,7 +365,58 @@ def plot_series(s, cmap=None, color=None, ax=None, figsize=None, aspect='auto', 
     -------
     ax : matplotlib axes instance
     """
-    pass
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise ImportError("matplotlib is required for plotting")
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    if aspect == 'auto':
+        if s.crs is not None and s.crs.is_geographic:
+            bounds = s.total_bounds
+            y_coord = np.mean([bounds[1], bounds[3]])
+            ax.set_aspect(1 / np.cos(np.deg2rad(y_coord)))
+        else:
+            ax.set_aspect('equal')
+    elif aspect is not None:
+        ax.set_aspect(aspect)
+
+    # Process style keywords
+    if color is not None:
+        style_kwds['color'] = color
+
+    # Group geometries by type
+    geoms = s.geometry.values
+    polygons = []
+    lines = []
+    points = []
+
+    for geom in geoms:
+        if geom is None:
+            continue
+        if geom.type.startswith('Multi'):
+            geom_type = geom.type[5:]  # Remove 'Multi' prefix
+        else:
+            geom_type = geom.type
+        
+        if geom_type == 'Polygon':
+            polygons.append(geom)
+        elif geom_type == 'LineString':
+            lines.append(geom)
+        elif geom_type == 'Point':
+            points.append(geom)
+
+    # Plot each geometry type
+    if polygons:
+        _plot_polygon_collection(ax, polygons, cmap=cmap, autolim=autolim, **style_kwds)
+    if lines:
+        _plot_linestring_collection(ax, lines, cmap=cmap, autolim=autolim, **style_kwds)
+    if points:
+        _plot_point_collection(ax, points, cmap=cmap, **style_kwds)
+
+    return ax
 
 def plot_dataframe(df, column=None, cmap=None, color=None, ax=None, cax=None, categorical=False, legend=False, scheme=None, k=5, vmin=None, vmax=None, markersize=None, figsize=None, legend_kwds=None, categories=None, classification_kwds=None, missing_kwds=None, aspect='auto', autolim=True, **style_kwds):
     """
