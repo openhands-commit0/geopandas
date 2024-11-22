@@ -32,7 +32,27 @@ def import_optional_dependency(name: str, extra: str=''):
     -------
     module
     """
-    pass
+    try:
+        module = importlib.import_module(name)
+        return module
+    except ImportError as e:
+        msg = f"Missing optional dependency '{name}'. {extra} "
+        msg += f"Use pip or conda to install {name}."
+        raise ImportError(msg) from e
+import functools
+
+def requires_pyproj(func):
+    """Decorator to check if pyproj is installed."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if not HAS_PYPROJ:
+            raise ImportError(
+                "The pyproj package is required for this functionality. "
+                f"Import error: {pyproj_import_error}"
+            )
+        return func(*args, **kwargs)
+    return wrapper
+
 try:
     import pyproj
     HAS_PYPROJ = True
